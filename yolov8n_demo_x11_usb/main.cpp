@@ -224,7 +224,11 @@ int run_detect_model(){
 
 	string str = device;
 	string res = str.substr(10);
-	cv::VideoCapture cap(stoi(res));
+
+	//cv::VideoCapture cap(stoi(res));
+	// Aananth commented the above line and added the following line to fix errors - 06 Oct 2024
+	cv::VideoCapture cap("v4l2src device=/dev/video1 ! image/jpeg ! jpegdec ! videoconvert ! appsink", cv::CAP_GSTREAMER);
+
 	cap.set(cv::CAP_PROP_FRAME_WIDTH, width);
 	cap.set(cv::CAP_PROP_FRAME_HEIGHT, height);
 
