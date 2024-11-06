@@ -229,8 +229,9 @@ int run_detect_model(){
 	// Aananth commented the above line and added the following line to fix errors - 06 Oct 2024
 	cv::VideoCapture cap("v4l2src device=/dev/video1 ! image/jpeg ! jpegdec ! videoconvert ! appsink", cv::CAP_GSTREAMER);
 
-	cap.set(cv::CAP_PROP_FRAME_WIDTH, width);
-	cap.set(cv::CAP_PROP_FRAME_HEIGHT, height);
+	// Aananth commented following lines to fix: gst_v4l2_object_set_crop:<v4l2src0:src> VIDIOC_S_CROP failed
+	//cap.set(cv::CAP_PROP_FRAME_WIDTH, width);
+	//cap.set(cv::CAP_PROP_FRAME_HEIGHT, height);
 
 	if (!cap.isOpened()) {
 		cout << "capture device failed to open!" << endl;
