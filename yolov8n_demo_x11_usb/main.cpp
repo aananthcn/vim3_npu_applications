@@ -186,103 +186,127 @@ static void draw_results(cv::Mat& frame, DetectResult resultData, int img_width,
 	cv::waitKey(1);
 }
 
-int run_detect_model(){
-	int nn_height, nn_width, nn_channel;
 
-	//prepare model
-	g_graph = vnn_CreateYolov8n(model_path, NULL,
-			vnn_GetPrePorcessMap(), vnn_GetPrePorcessMapCount(),
-			vnn_GetPostPorcessMap(), vnn_GetPostPorcessMapCount());
-	cout << "det_set_model success!!" << endl;
+int run_detect_model() {
+    int nn_height, nn_width, nn_channel;
 
-	vsi_nn_tensor_t *tensor = NULL;
-	tensor = vsi_nn_GetTensor(g_graph, g_graph->input.tensors[0]);
+    // Prepare model
+    g_graph = vnn_CreateYolov8n(model_path, NULL,
+                                vnn_GetPrePorcessMap(), vnn_GetPrePorcessMapCount(),
+                                vnn_GetPostPorcessMap(), vnn_GetPostPorcessMapCount());
+    if (!g_graph) {
+        cerr << "Failed to create YOLOv8n model!" << endl;
+        return -1;
+    }
+    cout << "Model set successfully!" << endl;
 
-	nn_width = tensor->attr.size[0];
-	nn_height = tensor->attr.size[1];
-	nn_channel = tensor->attr.size[2];
+    vsi_nn_tensor_t *tensor = vsi_nn_GetTensor(g_graph, g_graph->input.tensors[0]);
+    if (!tensor) {
+        cerr << "Failed to retrieve input tensor!" << endl;
+        vnn_ReleaseYolov8n(g_graph, TRUE);
+        return -1;
+    }
 
-	cout << "\nmodel.width:" << nn_width <<endl;
-	cout << "model.height:" << nn_height <<endl;
-	cout << "model.channel:" << nn_channel << "\n" <<endl;
+    nn_width = tensor->attr.size[0];
+    nn_height = tensor->attr.size[1];
+    nn_channel = tensor->attr.size[2];
 
-	g_nn_width = nn_width;
-	g_nn_height = nn_height;
-	g_nn_channel = nn_channel;
+    cout << "\nModel Width: " << nn_width << "\nModel Height: " << nn_height
+         << "\nModel Channels: " << nn_channel << endl;
 
-	DetectResult resultData;
-	cv::Mat tmp_image(g_nn_width, g_nn_height, CV_8UC3);
-	cv::Mat img(height,width,CV_8UC3,cv::Scalar(0,0,0));
-	int frames = 0;
-	struct timeval time_start, time_end;
-	float total_time = 0;
-	vsi_size_t stride = vsi_nn_TypeGetBytes(tensor->attr.dtype.vx_type);
-	uint8_t* input_ptr = (uint8_t*)malloc(stride * g_nn_width * g_nn_height * g_nn_channel * sizeof(uint8_t));
-	vsi_status status = VSI_FAILURE;
+    g_nn_width = nn_width;
+    g_nn_height = nn_height;
+    g_nn_channel = nn_channel;
 
-    	cv::namedWindow("Image Window");
+    // Prepare Matrices and Video Capture
+    cv::Mat tmp_image(g_nn_height, g_nn_width, CV_8UC3);  // Note: OpenCV uses (height, width) format
+    cv::Mat img(height, width, CV_8UC3, cv::Scalar(0, 0, 0));
 
-	string str = device;
-	string res = str.substr(10);
+    int frames = 0;
+    struct timeval time_start, time_end;
+    float time_diff = 0.0, total_time = 0.0;
 
-	//cv::VideoCapture cap(stoi(res));
-	// Aananth commented the above line and added the following line to fix errors - 06 Oct 2024
-	cv::VideoCapture cap("v4l2src device=/dev/video1 ! image/jpeg ! jpegdec ! videoconvert ! appsink", cv::CAP_GSTREAMER);
+    vsi_size_t stride = vsi_nn_TypeGetBytes(tensor->attr.dtype.vx_type);
+    unique_ptr<uint8_t[]> input_ptr(new uint8_t[stride * g_nn_width * g_nn_height * g_nn_channel]);
 
-	// Aananth commented following lines to fix: gst_v4l2_object_set_crop:<v4l2src0:src> VIDIOC_S_CROP failed
-	//cap.set(cv::CAP_PROP_FRAME_WIDTH, width);
-	//cap.set(cv::CAP_PROP_FRAME_HEIGHT, height);
+    cv::namedWindow("Image Window");
 
-	if (!cap.isOpened()) {
-		cout << "capture device failed to open!" << endl;
-		cap.release();
-		exit(-1);
-	}
+    cv::VideoCapture cap("v4l2src device=/dev/video1 ! videoconvert ! video/x-raw, format=BGR, width=" +
+                         to_string(width) + ", height=" + to_string(height) + " ! appsink", cv::CAP_GSTREAMER);
 
-	while (true) {
-		if (!cap.read(img)) {
-			cout<<"Capture read error"<<std::endl;
-			break;
-		}
+    if (!cap.isOpened()) {
+        cerr << "Failed to open video capture device!" << endl;
+        return -1;
+    }
 
-		cv::resize(img, tmp_image, tmp_image.size());
-		cv::cvtColor(tmp_image, tmp_image, cv::COLOR_BGR2RGB);
-		tmp_image.convertTo(tmp_image, CV_32FC3);
-		tmp_image = tmp_image / 255.0;
-
-		input_image_t image;
-		image.data      = tmp_image.data;
-		image.width     = tmp_image.cols;
-		image.height    = tmp_image.rows;
-		image.channel   = tmp_image.channels();
-		image.pixel_format = PIX_FMT_RGB888;
+    while (true) {
+        gettimeofday(&time_start, 0);
+        if (!cap.read(img)) {
+            cerr << "Capture read error!" << endl;
+            break;
+        }
+        gettimeofday(&time_end, 0);
+        time_diff += (float)((time_end.tv_sec - time_start.tv_sec) +
+                     (time_end.tv_usec - time_start.tv_usec) / 1000000.0f);
+		cout << "Time to capture a frame = " << fixed << setprecision(4) << time_diff << " sec" << endl;
+		total_time += time_diff;
 		
-		gettimeofday(&time_start, 0);
-		yolov8n_preprocess(image, input_ptr, g_nn_width, g_nn_height, g_nn_channel, stride, tensor);
+        // Resize, color-convert, and normalize the image
+        gettimeofday(&time_start, 0);
+        cv::resize(img, tmp_image, tmp_image.size());
+        cv::cvtColor(tmp_image, tmp_image, cv::COLOR_BGR2RGB);
+        tmp_image.convertTo(tmp_image, CV_32FC3, 1.0 / 255.0);
+        gettimeofday(&time_end, 0);
+        time_diff += (float)((time_end.tv_sec - time_start.tv_sec) +
+                     (time_end.tv_usec - time_start.tv_usec) / 1000000.0f);
+		cout << "Time to covert a frame = " << fixed << setprecision(4) << time_diff << " sec" << endl;
+		total_time += time_diff;
 
-		status = vsi_nn_CopyDataToTensor(g_graph, tensor, input_ptr);
-		status = vsi_nn_RunGraph(g_graph);
-		yolov8n_postprocess(g_graph, &resultData);
-		
-		gettimeofday(&time_end, 0);
-		draw_results(img, resultData, width, height);
-		++frames;
-		total_time += (float)((time_end.tv_sec - time_start.tv_sec) + (time_end.tv_usec - time_start.tv_usec) / 1000.0f / 1000.0f);
+        input_image_t image{
+            tmp_image.data,
+            (det_pixel_format)tmp_image.cols,
+            tmp_image.rows,
+            tmp_image.channels(),
+            static_cast<det_pixel_format>(PIX_FMT_RGB888)
+        };
+		DetectResult resultData;
 
-		if (total_time >= 1.0f) {
-			int fps = (int)(frames / total_time);
-			fprintf(stderr, "Inference FPS: %i\n", fps);
-			frames = 0;
-			total_time = 0;
-		}
-    	}
-	free(input_ptr);
-    
-	vnn_ReleaseYolov8n(g_graph, TRUE);
-	g_graph = NULL;
-	
-	return 0;
+        // Run Preprocess, Copy Data to Tensor, and Run Graph
+        gettimeofday(&time_start, 0);
+        yolov8n_preprocess(image, input_ptr.get(), g_nn_width, g_nn_height, g_nn_channel, stride, tensor);
+
+        vsi_nn_CopyDataToTensor(g_graph, tensor, input_ptr.get());
+        vsi_nn_RunGraph(g_graph);
+        yolov8n_postprocess(g_graph, &resultData);
+
+        // Draw Results and Calculate FPS
+        gettimeofday(&time_end, 0);
+        draw_results(img, resultData, width, height);
+        frames++;
+        time_diff += (float)((time_end.tv_sec - time_start.tv_sec) +
+                     (time_end.tv_usec - time_start.tv_usec) / 1000000.0f);
+
+		// FPS and NPU performance computation
+		int fps = static_cast<int>(frames / time_diff);
+		cout << "Inference FPS: " << fps << ", Time taken by NPU = " << fixed << setprecision(4) << time_diff << " sec" << endl;
+		total_time += time_diff;
+		frames = 0;
+		time_diff = 0.0;
+		cout << "TOTAL TIME PER LOOP = "<< fixed << setprecision(4) << total_time << " sec" << endl << endl;
+		total_time = 0.0;
+
+        cv::imshow("Image Window", img);
+        if (cv::waitKey(1) == 27) {  // Exit if 'Esc' is pressed
+            break;
+        }
+    }
+
+    vnn_ReleaseYolov8n(g_graph, TRUE);
+    g_graph = nullptr;
+
+    return 0;
 }
+
 
 int main(int argc, char** argv){
 	int c;
